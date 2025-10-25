@@ -1,4 +1,4 @@
-import { Router, Request, Response } from "express";
+import express, { Router, Request, Response } from "express";
 import multer from "multer";
 import { getRestClient } from "../shopify";
 import { supabase } from "../supabase";
@@ -13,16 +13,14 @@ import { requirePermission } from "../middleware/permissions";
  * - GET /products/my     : explicit per-user list
  * - POST /products       : create product (JSON or multipart/form-data)
  *
- * Rules:
- * - Auth via Authorization: Bearer <jwt> OR x-api-key: <raw_key> (handled by authorizer)
- * - requirePermission('can_post_products') is required for POST
- * - Images (file upload OR image URL in JSON) are allowed ONLY for users with roleName === "PREMIUM"
+ * This file accepts:
+ * - JSON with image (image: URL) OR image_base64 (data URI or raw base64) in body
+ * - multipart/form-data with file field `image`
  *
- * Notes:
- * - multipart uploads use multer memoryStorage; file size limit = 25 MB
- * - JSON body limit is enforced globally by express.json in server bootstrap (1MB)
+ * Images (file or image_base64 or image URL) are allowed ONLY for users with roleName === "PREMIUM"
  */
 
+// Multer in-memory storage for file uploads (multipart)
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
@@ -37,6 +35,10 @@ const upload = multer({
 });
 
 const router = Router();
+
+// Route-level JSON parser with increased limit so clients can send base64 in JSON
+// Note: If you also have app.use(express.json({ limit: '1mb' })) globally, ensure it does not reject large JSON
+router.use(express.json({ limit: "25mb" }));
 
 /**
  * GET /products
@@ -105,12 +107,12 @@ router.get("/my", authorizer, async (req: Request, res: Response) => {
  * POST /products
  *
  * Accepts:
- * - application/json { name, price, image?: "https://..." }
- * - multipart/form-data with fields name, price and file field 'image'
+ * - JSON body: { name, price, image?: url, image_base64?: string (data URI or raw base64) }
+ * - multipart/form-data: fields name, price and file field 'image'
  *
  * Permissions:
  * - require can_post_products
- * - images (file or image URL) allowed ONLY for PREMIUM users (roleName === "PREMIUM")
+ * - images (file or image URL or image_base64) allowed ONLY for PREMIUM users
  */
 router.post(
   "/",
@@ -140,8 +142,10 @@ router.post(
     let priceRaw: any;
     let fileBuffer: Buffer | undefined;
     let imageUrlProvided = false;
+    let imageBase64Provided = false;
+    let imageBase64Value: string | undefined;
 
-    // Debug - show resolved user/role to help diagnose permission mismatches
+    // Debug - show resolved user/role
     const dbgUser = (req as any).user;
     console.debug("POST /products invoked - resolved user:", {
       id: dbgUser?.id,
@@ -158,19 +162,33 @@ router.post(
         fileBuffer = (req as any).file.buffer as Buffer;
       }
     } else {
+      // JSON path; body has already been parsed by router-level express.json({ limit: '25mb' })
       name = req.body?.name;
       priceRaw = req.body?.price;
       if (req.body?.image) imageUrlProvided = true;
+      if (req.body?.image_base64) {
+        imageBase64Provided = true;
+        imageBase64Value = req.body?.image_base64 as string;
+      } else if (typeof req.body?.image === "string") {
+        // If client sent a data URI in image field (data:...base64,...), accept it as base64
+        const maybeDataUri = req.body.image as string;
+        if (maybeDataUri.startsWith("data:") && maybeDataUri.includes(";base64,")) {
+          imageBase64Provided = true;
+          imageBase64Value = maybeDataUri.split(",")[1];
+        }
+      }
     }
 
-    // Validate input
+    // Validation
     if (!contentType.startsWith("multipart/form-data")) {
       try {
+        // createProductSchema includes image_base64 validation and mutual-exclusion guard
         createProductSchema.parse(req.body);
       } catch (err: any) {
         return res.status(400).json({ error: err?.errors ?? "Invalid body" });
       }
     } else {
+      // multipart manual validation
       if (!name || typeof name !== "string" || name.trim().length === 0) {
         return res.status(400).json({ error: "name is required" });
       }
@@ -189,11 +207,10 @@ router.post(
 
     // Enforce PREMIUM-only image rule
     const roleName = user.role?.name ?? (user.roleName as string | undefined) ?? null;
-    const imagePresent = Boolean(fileBuffer) || imageUrlProvided;
+    const imagePresent = Boolean(fileBuffer) || imageUrlProvided || imageBase64Provided;
 
     if (imagePresent) {
       if (roleName !== "PREMIUM") {
-        // If you prefer ADMIN to be allowed as well, change the check accordingly.
         return res.status(403).json({ error: "Forbidden: requires PREMIUM access to include an image" });
       }
     }
@@ -208,9 +225,21 @@ router.post(
         },
       };
 
+      // Priority for image sources:
+      // 1) multipart fileBuffer (highest)
+      // 2) image_base64 provided in JSON (data URI or raw base64)
+      // 3) image URL in JSON (src)
       if (fileBuffer) {
-        // Shopify accepts base64-encoded attachment field for image
         const base64 = fileBuffer.toString("base64");
+        productPayload.product.images = [{ attachment: base64 }];
+      } else if (imageBase64Provided && imageBase64Value) {
+        // ensure no data: prefix is present; imageBase64Value should be raw base64 string (schema validated)
+        const base64 = imageBase64Value;
+        // double-check size (defensive)
+        const buf = Buffer.from(base64, "base64");
+        if (buf.length > 25 * 1024 * 1024) {
+          return res.status(413).json({ error: "Decoded image too large (max 25MB)" });
+        }
         productPayload.product.images = [{ attachment: base64 }];
       } else if (imageUrlProvided) {
         productPayload.product.images = [{ src: req.body.image }];

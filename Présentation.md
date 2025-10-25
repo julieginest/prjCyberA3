@@ -1,10 +1,17 @@
+# Partie 0
+- Montrer BDD
+- Montrer les middleware (via product)
+    - authorize
+    - permissions
+    - validate
+
+
 # Partie 1
 - Test /health
-- Montrer la BDD
 - Le /register
 - Le /login
 
-# Partie 2
+# Partie 2 & 3
 - /my-user
     - USER
     - PREMIUM
@@ -12,3 +19,25 @@
 - /users
     - USER
     - ADMIN
+
+# Partie 4
+- POST Product
+- /products
+    - ADMIN
+    - USER
+- /products/my
+
+# Partie 5
+- API
+    - Créer
+    - Lister
+    - Supprimer
+    - Utiliser
+
+# Partie 6
+-> Pas d'incrémentation, G pas compris lequel envoye les panier validé
+
+# Partie 7
+- Test avec image
+    -USER
+    -ADMIN
