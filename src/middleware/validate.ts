@@ -8,7 +8,7 @@ import { Request, Response, NextFunction } from "express";
  */
 export function validateBody(schema: ZodObject) {
     return (req: Request, res: Response, next: NextFunction) => {
-        // Merge in order of precedence: body -> query -> params
+        // Merge in order of precedence: query -> params -> body
         // (body values will overwrite query/params values if same keys exist)
         const source = {
             ...(req.query ?? {}),
@@ -23,7 +23,8 @@ export function validateBody(schema: ZodObject) {
             return next();
         } catch (err: unknown) {
             if (err instanceof ZodError) {
-                const errors = err.errors.map((e) => ({
+                // ZodError uses `issues` (not `errors`)
+                const errors = err.issues.map((e) => ({
                     path: e.path,
                     message: e.message,
                     code: e.code,
