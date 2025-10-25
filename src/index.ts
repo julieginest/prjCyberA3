@@ -1,12 +1,19 @@
-import express, { Application, Request, Response } from 'express';
+import express from "express";
+import dotenv from "dotenv";
+import authRoutes from "./routes/auth";
 
-const app: Application = express();
-const PORT = 3000;
+dotenv.config();
 
-app.get('/health', (req: Request, res: Response) => {
-  res.send({test:"hello"});
-});
+const app = express();
+app.use(express.json());
 
+// Routes
+app.use("/auth", authRoutes);
+
+// Basic healthcheck
+app.get("/health", (_, res) => res.json({ status: "ok" }));
+
+const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 app.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`);
+  console.log(`Server listening on http://localhost:${PORT}`);
 });
