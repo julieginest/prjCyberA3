@@ -104,6 +104,36 @@ router.get("/my", authorizer, async (req: Request, res: Response) => {
 });
 
 /**
+ * GET /products/my-bestsellers
+ * - Protected: authorizer + requirePermission("can_get_my_bestsellers")
+ * - Returns products created by the authenticated user, ordered by sales_count desc
+ * - Note: sales_count is updated by the webhook; if webhook isn't functioning values may be stale.
+ */
+router.get("/my-bestsellers", authorizer, requirePermission("can_get_my_bestsellers"), async (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    if (!user) return res.status(401).json({ error: "Unauthorized" });
+
+    const { data, error } = await supabase
+      .from("products")
+      .select("id, shopify_id, created_by, sales_count, metadata, created_at")
+      .eq("created_by", user.id)
+      .order("sales_count", { ascending: false })
+      .order("created_at", { ascending: false }); // tie-breaker
+
+    if (error) {
+      console.error("GET /products/my-bestsellers supabase error:", error);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+
+    return res.json({ products: data ?? [] });
+  } catch (err) {
+    console.error("GET /products/my-bestsellers unexpected:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+/**
  * POST /products
  *
  * Accepts:

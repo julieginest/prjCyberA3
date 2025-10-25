@@ -3,6 +3,7 @@ import dotenv from "dotenv";
 import authRoutes from "./routes/auth";
 import userRoutes from "./routes/user";
 import productsRoutes from "./routes/products";
+import apiKeysRoutes from "./routes/apiKeys";
 import shopifyWebhookHandler from "./routes/webhooks";
 import { sizeLimiter } from "./middleware/sizeLimiter";
 
@@ -28,6 +29,7 @@ app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 app.use("/", userRoutes);
 app.use("/auth", authRoutes);
 app.use("/products", productsRoutes);
+app.use("/api", apiKeysRoutes);
 
 // healthcheck
 app.get("/health", (_, res) => res.json({ status: "ok" }));

@@ -3,13 +3,16 @@
 - Montrer les middleware (via product)
     - authorize
     - permissions
-    - validate
+    - validate -> zod
+    -sizeLimit (5 -> 25Mo images)
 
 
 # Partie 1
 - Test /health
 - Le /register
 - Le /login
+    - USER
+    - BAN
 ## PSWD
 - Changement de pswd
 - Test
@@ -20,7 +23,6 @@
 - /my-user
     - USER
     - PREMIUM
-    - BAN
 - /users
     - USER
     - ADMIN

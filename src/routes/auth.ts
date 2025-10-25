@@ -82,7 +82,7 @@ router.post("/signin", validateBody(signupSchema), async (req, res) => {
 /**
  * POST /auth/login
  */
-router.post("/login", validateBody(loginSchema), requirePermission("can_post_login"), async (req, res) => {
+router.post("/login", validateBody(loginSchema), async (req, res) => {
     const { email, password } = req.body as { email: string; password: string };
     const emailLower = email.toLowerCase();
 
@@ -155,7 +155,7 @@ router.post("/login", validateBody(loginSchema), requirePermission("can_post_log
 /**
  * POST /auth/change-password
  */
-router.post("/change-password", authorizer, validateBody(changePasswordSchema), requirePermission("can_post_login"),
+router.post("/change-password", authorizer, validateBody(changePasswordSchema),
     async (req, res) => {
         const { oldPassword, newPassword } = req.body as {
             oldPassword: string;
