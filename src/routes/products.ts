@@ -2,17 +2,31 @@ import { Router, Request, Response } from "express";
 import multer from "multer";
 import { getRestClient } from "../shopify";
 import { supabase } from "../supabase";
-import { validateBody } from "../middleware/validate";
 import { createProductSchema } from "../zod-schemas/product";
 import { authorizer } from "../middleware/authorizer";
 import { requirePermission } from "../middleware/permissions";
 
-// Multer in-memory storage so we can access file buffer
-// File limit set to 25 MB for image uploads
+/**
+ * products routes
+ *
+ * - GET /products        : admin => all products, otherwise only products created by the authenticated user
+ * - GET /products/my     : explicit per-user list
+ * - POST /products       : create product (JSON or multipart/form-data)
+ *
+ * Rules:
+ * - Auth via Authorization: Bearer <jwt> OR x-api-key: <raw_key> (handled by authorizer)
+ * - requirePermission('can_post_products') is required for POST
+ * - Images (file upload OR image URL in JSON) are allowed ONLY for users with roleName === "PREMIUM"
+ *
+ * Notes:
+ * - multipart uploads use multer memoryStorage; file size limit = 25 MB
+ * - JSON body limit is enforced globally by express.json in server bootstrap (1MB)
+ */
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 25 * 1024 * 1024, // 25 MB max for image uploads
+    fileSize: 25 * 1024 * 1024, // 25 MB
   },
   fileFilter: (_req, file, cb) => {
     if (!file.mimetype.startsWith("image/")) {
@@ -26,10 +40,6 @@ const router = Router();
 
 /**
  * GET /products
- * - If user is ADMIN => return all products
- * - Otherwise => return only products created by the authenticated user
- *
- * Auth: authorizer (JWT or x-api-key)
  */
 router.get("/", authorizer, async (req: Request, res: Response) => {
   try {
@@ -40,13 +50,11 @@ router.get("/", authorizer, async (req: Request, res: Response) => {
 
     let query;
     if (roleName === "ADMIN") {
-      // Admin: return all products
       query = supabase
         .from("products")
         .select("id, shopify_id, created_by, sales_count, metadata, created_at")
         .order("created_at", { ascending: false });
     } else {
-      // Non-admin: only their own products
       query = supabase
         .from("products")
         .select("id, shopify_id, created_by, sales_count, metadata, created_at")
@@ -69,8 +77,6 @@ router.get("/", authorizer, async (req: Request, res: Response) => {
 
 /**
  * GET /products/my
- * - Authenticated (authorizer)
- * - Returns products created by the authenticated user
  */
 router.get("/my", authorizer, async (req: Request, res: Response) => {
   try {
@@ -97,26 +103,26 @@ router.get("/my", authorizer, async (req: Request, res: Response) => {
 
 /**
  * POST /products
- * Accepts either:
- * - application/json { name, price, image?: "https://..." }  (JSON body)
- * - multipart/form-data with fields name, price and file field 'image' (single file)
+ *
+ * Accepts:
+ * - application/json { name, price, image?: "https://..." }
+ * - multipart/form-data with fields name, price and file field 'image'
  *
  * Permissions:
- * - require can_post_products always
- * - if an image (file or URL) is provided, it will be allowed ONLY for PREMIUM users
+ * - require can_post_products
+ * - images (file or image URL) allowed ONLY for PREMIUM users (roleName === "PREMIUM")
  */
 router.post(
   "/",
   authorizer,
   requirePermission("can_post_products"),
-  // Multer dispatch for multipart; otherwise continue to JSON handler
+  // Dispatch multer only for multipart/form-data requests
   async (req: Request, res: Response, next) => {
     const contentType = (req.headers["content-type"] || "").toString();
     if (contentType.startsWith("multipart/form-data")) {
       return upload.single("image")(req as any, res as any, (err: any) => {
         if (err) {
           console.error("multer error:", err);
-          // Multer errors are often too generic; map common ones
           if (err.code === "LIMIT_FILE_SIZE") {
             return res.status(413).json({ error: "Uploaded file too large (max 25MB)" });
           }
@@ -135,8 +141,15 @@ router.post(
     let fileBuffer: Buffer | undefined;
     let imageUrlProvided = false;
 
-    // Debug entry to help trace missing-route / handler runs
-    console.debug("POST /products hit; content-type:", contentType);
+    // Debug - show resolved user/role to help diagnose permission mismatches
+    const dbgUser = (req as any).user;
+    console.debug("POST /products invoked - resolved user:", {
+      id: dbgUser?.id,
+      roleName: dbgUser?.roleName,
+      roleObject: dbgUser?.role,
+      authMethod: (req as any).authMethod,
+      contentType,
+    });
 
     if (contentType.startsWith("multipart/form-data")) {
       name = (req.body?.name as string) ?? undefined;
@@ -150,7 +163,7 @@ router.post(
       if (req.body?.image) imageUrlProvided = true;
     }
 
-    // Validation
+    // Validate input
     if (!contentType.startsWith("multipart/form-data")) {
       try {
         createProductSchema.parse(req.body);
@@ -174,15 +187,13 @@ router.post(
     const user = (req as any).user;
     if (!user || !user.id) return res.status(401).json({ error: "Unauthorized" });
 
-    // Enforce: images (file or image URL) are allowed ONLY for PREMIUM users.
-    // We use user.roleName (set by authorizer) or user.role?.name if available.
+    // Enforce PREMIUM-only image rule
     const roleName = user.role?.name ?? (user.roleName as string | undefined) ?? null;
     const imagePresent = Boolean(fileBuffer) || imageUrlProvided;
 
     if (imagePresent) {
       if (roleName !== "PREMIUM") {
-        // If you want ADMINs to be allowed too, change the condition above to:
-        // if (roleName !== "PREMIUM" && roleName !== "ADMIN") { ... }
+        // If you prefer ADMIN to be allowed as well, change the check accordingly.
         return res.status(403).json({ error: "Forbidden: requires PREMIUM access to include an image" });
       }
     }
@@ -198,6 +209,7 @@ router.post(
       };
 
       if (fileBuffer) {
+        // Shopify accepts base64-encoded attachment field for image
         const base64 = fileBuffer.toString("base64");
         productPayload.product.images = [{ attachment: base64 }];
       } else if (imageUrlProvided) {

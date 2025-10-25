@@ -3,15 +3,36 @@ import crypto from "crypto";
 import { verifyJwt } from "../utils/jwt";
 import { supabase } from "../supabase";
 
+/**
+ * authorizer:
+ * - Support both Authorization: Bearer <jwt> and x-api-key: <raw_key>
+ * - Sets (req as any).authMethod = 'jwt' | 'api_key'
+ * - Attaches (req as any).user with normalized fields:
+ *    - id, name, email, created_at
+ *    - role: object|null (role row with permission booleans)
+ *    - roleName: normalized string (uppercased) to test identity
+ */
 export async function authorizer(req: Request, res: Response, next: NextFunction) {
   try {
     const authHeader = req.headers.authorization;
     const apiKeyHeader = (req.headers["x-api-key"] as string) || (req.headers["X-API-KEY"] as string);
 
+    // Helper to normalize role name
+    const normalizeRoleName = (name: any) => {
+      if (!name) return null;
+      return String(name).trim();
+    };
+
+    // JWT flow preferred
     if (authHeader && authHeader.startsWith("Bearer ")) {
       const token = authHeader.slice("Bearer ".length).trim();
       let payload: any;
-      try { payload = verifyJwt(token); } catch { return res.status(401).json({ error: "Invalid or expired token" }); }
+      try {
+        payload = verifyJwt(token);
+      } catch (err) {
+        return res.status(401).json({ error: "Invalid or expired token" });
+      }
+
       const userId = payload?.userId;
       if (!userId) return res.status(401).json({ error: "Invalid token payload" });
 
@@ -26,20 +47,29 @@ export async function authorizer(req: Request, res: Response, next: NextFunction
         return res.status(401).json({ error: "Invalid token user" });
       }
 
-      // load role by name and include the new permission
-      let roleObj = null;
+      // Load role by name and include permission columns (explicit)
+      let roleObj: any = null;
+      let roleNameNormalized: string | null = null;
       if (userRow.role) {
         const { data: roleData, error: roleError } = await supabase
           .from("roles")
-          .select("name, can_post_login, can_get_my_user, can_get_users, can_post_products, can_post_product_images, can_get_my_bestsellers")
+          .select(
+            "name, can_post_login, can_get_my_user, can_get_users, can_post_products, can_post_product_images, can_get_my_bestsellers"
+          )
           .eq("name", userRow.role)
           .single();
 
         if (roleError) {
           console.error("authorizer: fetch role error:", roleError);
-        } else {
+        } else if (roleData) {
           roleObj = roleData;
+          roleNameNormalized = normalizeRoleName(roleData.name);
         }
+      }
+
+      // If role row wasn't found, still set roleName from user's role string (normalize)
+      if (!roleNameNormalized && userRow.role) {
+        roleNameNormalized = normalizeRoleName(userRow.role);
       }
 
       (req as any).authMethod = "jwt";
@@ -49,15 +79,16 @@ export async function authorizer(req: Request, res: Response, next: NextFunction
         email: userRow.email,
         created_at: userRow.created_at,
         role: roleObj,
-        roleName: userRow.role,
+        roleName: roleNameNormalized,
       };
 
-      // debug log (temporary)
-      console.debug("authorizer jwt user:", { id: userRow.id, roleName: userRow.role, roleObj });
+      // debug
+      console.debug("authorizer(jwt) attached user:", { id: userRow.id, roleName: roleNameNormalized });
 
       return next();
     }
 
+    // API key flow
     if (apiKeyHeader) {
       const rawKey = apiKeyHeader.trim();
       if (!rawKey) return res.status(401).json({ error: "Invalid API key" });
@@ -74,7 +105,18 @@ export async function authorizer(req: Request, res: Response, next: NextFunction
       if (keyErr || !keyRow) return res.status(401).json({ error: "Invalid API key" });
       if (keyRow.revoked) return res.status(403).json({ error: "API key revoked" });
 
-      await supabase.from("api_keys").update({ last_used_at: new Date().toISOString() }).eq("id", keyRow.id);
+      // update last_used_at in background without awaiting.
+      // Wrap in an async IIFE to use await/try-catch (avoids PromiseLike typing issues).
+      void (async () => {
+        try {
+          await supabase
+            .from("api_keys")
+            .update({ last_used_at: new Date().toISOString() })
+            .eq("id", keyRow.id);
+        } catch (e) {
+          console.error("authorizer: failed to update api_keys.last_used_at", e);
+        }
+      })();
 
       const { data: userRow, error: userError } = await supabase
         .from("users")
@@ -87,19 +129,28 @@ export async function authorizer(req: Request, res: Response, next: NextFunction
         return res.status(401).json({ error: "Invalid API key user" });
       }
 
-      let roleObj = null;
+      // Load role row
+      let roleObj: any = null;
+      let roleNameNormalized: string | null = null;
       if (userRow.role) {
         const { data: roleData, error: roleError } = await supabase
           .from("roles")
-          .select("name, can_post_login, can_get_my_user, can_get_users, can_post_products, can_post_product_images, can_get_my_bestsellers")
+          .select(
+            "name, can_post_login, can_get_my_user, can_get_users, can_post_products, can_post_product_images, can_get_my_bestsellers"
+          )
           .eq("name", userRow.role)
           .single();
 
         if (roleError) {
           console.error("authorizer (api key): fetch role error:", roleError);
-        } else {
+        } else if (roleData) {
           roleObj = roleData;
+          roleNameNormalized = normalizeRoleName(roleData.name);
         }
+      }
+
+      if (!roleNameNormalized && userRow.role) {
+        roleNameNormalized = normalizeRoleName(userRow.role);
       }
 
       (req as any).authMethod = "api_key";
@@ -109,16 +160,17 @@ export async function authorizer(req: Request, res: Response, next: NextFunction
         email: userRow.email,
         created_at: userRow.created_at,
         role: roleObj,
-        roleName: userRow.role,
+        roleName: roleNameNormalized,
         apiKeyName: keyRow.name,
         apiKeyId: keyRow.id,
       };
 
-      console.debug("authorizer api_key user:", { id: userRow.id, roleName: userRow.role, roleObj });
+      console.debug("authorizer(api_key) attached user:", { id: userRow.id, roleName: roleNameNormalized, apiKeyId: keyRow.id });
 
       return next();
     }
 
+    // No auth provided
     return res.status(401).json({ error: "Missing Authorization or x-api-key header" });
   } catch (err) {
     console.error("authorizer unexpected error:", err);
