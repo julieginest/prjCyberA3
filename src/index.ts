@@ -3,6 +3,7 @@ import dotenv from "dotenv";
 import authRoutes from "./routes/auth";
 import userRoutes from "./routes/user";
 import productsRoutes from "./routes/products";
+import apiRoutes from "./routes/apiKeys"
 
 dotenv.config();
 
@@ -13,6 +14,7 @@ app.use(express.json());
 app.use("/auth", authRoutes);
 app.use("/users", userRoutes); // GET /users and /my-user are in routes/user.ts
 app.use("/products", productsRoutes);
+app.use("/api", apiRoutes);
 
 // Basic healthcheck
 app.get("/health", (_, res) => res.json({ status: "ok" }));
