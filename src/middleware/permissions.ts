@@ -7,7 +7,9 @@ type PermissionKey =
     | "can_post_login"
     | "can_get_my_user"
     | "can_get_users"
-    | "can_post_products"; // nouvelle permission
+    | "can_post_products"
+    | "can_post_product_images"   // nouvelle permission
+    | "can_get_my_bestsellers";   // nouvelle permission
 
 /**
  * Middleware factory: requirePermission('can_post_products') -> vérifie req.user.role.can_post_products === true

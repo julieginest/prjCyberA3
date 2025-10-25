@@ -103,7 +103,7 @@ router.get("/my", authorizer, async (req: Request, res: Response) => {
  *
  * Permissions:
  * - require can_post_products always
- * - if an image (file or URL) is provided, it will be allowed ONLY for PREMIUM users
+ * - if an image file is provided, require can_post_product_images
  */
 router.post(
   "/",
@@ -133,7 +133,6 @@ router.post(
     let name: string | undefined;
     let priceRaw: any;
     let fileBuffer: Buffer | undefined;
-    let imageUrlProvided = false;
 
     // Debug entry to help trace missing-route / handler runs
     console.debug("POST /products hit; content-type:", contentType);
@@ -147,7 +146,6 @@ router.post(
     } else {
       name = req.body?.name;
       priceRaw = req.body?.price;
-      if (req.body?.image) imageUrlProvided = true;
     }
 
     // Validation
@@ -174,16 +172,11 @@ router.post(
     const user = (req as any).user;
     if (!user || !user.id) return res.status(401).json({ error: "Unauthorized" });
 
-    // Enforce: images (file or image URL) are allowed ONLY for PREMIUM users.
-    // We use user.roleName (set by authorizer) or user.role?.name if available.
-    const roleName = user.role?.name ?? (user.roleName as string | undefined) ?? null;
-    const imagePresent = Boolean(fileBuffer) || imageUrlProvided;
-
-    if (imagePresent) {
-      if (roleName !== "PREMIUM") {
-        // If you want ADMINs to be allowed too, change the condition above to:
-        // if (roleName !== "PREMIUM" && roleName !== "ADMIN") { ... }
-        return res.status(403).json({ error: "Forbidden: requires PREMIUM access to include an image" });
+    // Image permission check
+    if (fileBuffer) {
+      const roleObj = user.role;
+      if (!roleObj || roleObj.can_post_product_images !== true) {
+        return res.status(403).json({ error: "Forbidden: role cannot post product images" });
       }
     }
 
@@ -200,7 +193,7 @@ router.post(
       if (fileBuffer) {
         const base64 = fileBuffer.toString("base64");
         productPayload.product.images = [{ attachment: base64 }];
-      } else if (imageUrlProvided) {
+      } else if (req.body?.image) {
         productPayload.product.images = [{ src: req.body.image }];
       }
 
