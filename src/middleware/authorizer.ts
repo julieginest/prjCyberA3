@@ -10,20 +10,21 @@ import { supabase } from "../supabase";
  * - Attaches (req as any).user with normalized fields:
  *    - id, name, email, created_at
  *    - role: object|null (role row with permission booleans)
- *    - roleName: normalized string (uppercased) to test identity
+ *    - roleName: normalized string to test identity
+ *
+ * Additional: invalidates JWTs issued before users.password_changed_at
  */
 export async function authorizer(req: Request, res: Response, next: NextFunction) {
   try {
     const authHeader = req.headers.authorization;
     const apiKeyHeader = (req.headers["x-api-key"] as string) || (req.headers["X-API-KEY"] as string);
 
-    // Helper to normalize role name
     const normalizeRoleName = (name: any) => {
       if (!name) return null;
       return String(name).trim();
     };
 
-    // JWT flow preferred
+    // JWT flow
     if (authHeader && authHeader.startsWith("Bearer ")) {
       const token = authHeader.slice("Bearer ".length).trim();
       let payload: any;
@@ -34,6 +35,7 @@ export async function authorizer(req: Request, res: Response, next: NextFunction
       }
 
       const userId = payload?.userId;
+      const tokenIat = typeof payload?.iat === "number" ? payload.iat : undefined; // seconds since epoch
       if (!userId) return res.status(401).json({ error: "Invalid token payload" });
 
       const { data: userRow, error: userError } = await supabase
@@ -47,7 +49,16 @@ export async function authorizer(req: Request, res: Response, next: NextFunction
         return res.status(401).json({ error: "Invalid token user" });
       }
 
-      // Load role by name and include permission columns (explicit)
+      // If the user has a password_changed_at, invalidate tokens issued before that time
+      if (userRow.password_changed_at && tokenIat) {
+        const pwdChangedAtSec = Math.floor(new Date(userRow.password_changed_at).getTime() / 1000);
+        if (tokenIat < pwdChangedAtSec) {
+          console.debug("authorizer: token issued before password change", { tokenIat, pwdChangedAtSec });
+          return res.status(401).json({ error: "Invalid or expired token" });
+        }
+      }
+
+      // Load role row (permissions)
       let roleObj: any = null;
       let roleNameNormalized: string | null = null;
       if (userRow.role) {
@@ -67,7 +78,6 @@ export async function authorizer(req: Request, res: Response, next: NextFunction
         }
       }
 
-      // If role row wasn't found, still set roleName from user's role string (normalize)
       if (!roleNameNormalized && userRow.role) {
         roleNameNormalized = normalizeRoleName(userRow.role);
       }
@@ -82,13 +92,12 @@ export async function authorizer(req: Request, res: Response, next: NextFunction
         roleName: roleNameNormalized,
       };
 
-      // debug
       console.debug("authorizer(jwt) attached user:", { id: userRow.id, roleName: roleNameNormalized });
 
       return next();
     }
 
-    // API key flow
+    // API key flow — unchanged (API keys are not invalidated by password changes)
     if (apiKeyHeader) {
       const rawKey = apiKeyHeader.trim();
       if (!rawKey) return res.status(401).json({ error: "Invalid API key" });
@@ -105,14 +114,10 @@ export async function authorizer(req: Request, res: Response, next: NextFunction
       if (keyErr || !keyRow) return res.status(401).json({ error: "Invalid API key" });
       if (keyRow.revoked) return res.status(403).json({ error: "API key revoked" });
 
-      // update last_used_at in background without awaiting.
-      // Wrap in an async IIFE to use await/try-catch (avoids PromiseLike typing issues).
+      // update last_used_at in background
       void (async () => {
         try {
-          await supabase
-            .from("api_keys")
-            .update({ last_used_at: new Date().toISOString() })
-            .eq("id", keyRow.id);
+          await supabase.from("api_keys").update({ last_used_at: new Date().toISOString() }).eq("id", keyRow.id);
         } catch (e) {
           console.error("authorizer: failed to update api_keys.last_used_at", e);
         }
@@ -120,7 +125,7 @@ export async function authorizer(req: Request, res: Response, next: NextFunction
 
       const { data: userRow, error: userError } = await supabase
         .from("users")
-        .select("id, name, email, created_at, role")
+        .select("id, name, email, created_at, role, password_changed_at")
         .eq("id", keyRow.user_id)
         .single();
 
@@ -129,7 +134,8 @@ export async function authorizer(req: Request, res: Response, next: NextFunction
         return res.status(401).json({ error: "Invalid API key user" });
       }
 
-      // Load role row
+      // Note: We do NOT invalidate api keys on password change. If you want that behavior, add logic here.
+
       let roleObj: any = null;
       let roleNameNormalized: string | null = null;
       if (userRow.role) {
@@ -170,7 +176,7 @@ export async function authorizer(req: Request, res: Response, next: NextFunction
       return next();
     }
 
-    // No auth provided
+    // No auth
     return res.status(401).json({ error: "Missing Authorization or x-api-key header" });
   } catch (err) {
     console.error("authorizer unexpected error:", err);

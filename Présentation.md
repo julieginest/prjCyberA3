@@ -10,6 +10,11 @@
 - Test /health
 - Le /register
 - Le /login
+## PSWD
+- Changement de pswd
+- Test
+- Reco
+- Rechangement
 
 # Partie 2 & 3
 - /my-user

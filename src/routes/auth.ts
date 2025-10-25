@@ -5,6 +5,7 @@ import { signupSchema, loginSchema, changePasswordSchema } from "../zod-schemas/
 import { validateBody } from "../middleware/validate";
 import { signJwt } from "../utils/jwt";
 import { authorizer } from "../middleware/authorizer";
+import { requirePermission } from "../middleware/permissions";
 
 const router = Router();
 
@@ -81,7 +82,7 @@ router.post("/signin", validateBody(signupSchema), async (req, res) => {
 /**
  * POST /auth/login
  */
-router.post("/login", validateBody(loginSchema), async (req, res) => {
+router.post("/login", validateBody(loginSchema), requirePermission("can_post_login"), async (req, res) => {
     const { email, password } = req.body as { email: string; password: string };
     const emailLower = email.toLowerCase();
 
@@ -154,10 +155,7 @@ router.post("/login", validateBody(loginSchema), async (req, res) => {
 /**
  * POST /auth/change-password
  */
-router.post(
-    "/change-password",
-    authorizer,
-    validateBody(changePasswordSchema),
+router.post("/change-password", authorizer, validateBody(changePasswordSchema), requirePermission("can_post_login"),
     async (req, res) => {
         const { oldPassword, newPassword } = req.body as {
             oldPassword: string;
