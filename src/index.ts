@@ -1,6 +1,8 @@
 import express from "express";
 import dotenv from "dotenv";
 import authRoutes from "./routes/auth";
+import userRoutes from "./routes/user";
+import productsRoutes from "./routes/products";
 
 dotenv.config();
 
@@ -9,6 +11,8 @@ app.use(express.json());
 
 // Routes
 app.use("/auth", authRoutes);
+app.use("/users", userRoutes); // GET /users and /my-user are in routes/user.ts
+app.use("/products", productsRoutes);
 
 // Basic healthcheck
 app.get("/health", (_, res) => res.json({ status: "ok" }));

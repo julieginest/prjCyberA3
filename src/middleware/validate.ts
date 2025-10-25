@@ -1,12 +1,14 @@
-import { ZodObject, ZodError } from "zod";
+import { ZodObject, ZodRawShape, ZodError } from "zod";
 import { Request, Response, NextFunction } from "express";
 
 /**
- * Validate request data against a Zod schema.
+ * Validate request data against a Zod object schema.
  * It merges sources so you can send data in JSON body, query string or route params.
  * The parsed result is assigned to req.body for downstream handlers.
+ *
+ * Accepts a ZodObject (i.e. an object schema) instead of the nonexistent AnyZodObject.
  */
-export function validateBody(schema: ZodObject) {
+export function validateBody(schema: ZodObject<ZodRawShape>) {
     return (req: Request, res: Response, next: NextFunction) => {
         // Merge in order of precedence: query -> params -> body
         // (body values will overwrite query/params values if same keys exist)
@@ -23,7 +25,7 @@ export function validateBody(schema: ZodObject) {
             return next();
         } catch (err: unknown) {
             if (err instanceof ZodError) {
-                // ZodError uses `issues` (not `errors`)
+                // ZodError exposes `issues`
                 const errors = err.issues.map((e) => ({
                     path: e.path,
                     message: e.message,
